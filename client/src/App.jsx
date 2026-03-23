@@ -1,15 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import AuthPage from "./components/AuthPage";
-import Dashboard from "./components/Dashboard";
+import HomePage from "./components/chat/HomePage";
 
-const API_BASE = "http://localhost:5000/api";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5001/api";
 const SESSION_KEY = "mern-ui-user";
 
 export default function App() {
-  const [highlights, setHighlights] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({ title: "", description: "", tag: "" });
-  const [error, setError] = useState("");
   const [authMode, setAuthMode] = useState("login");
   const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
   const [authLoading, setAuthLoading] = useState(false);
@@ -23,37 +19,6 @@ export default function App() {
       return null;
     }
   });
-
-  const stats = useMemo(() => {
-    const tagSet = new Set(highlights.map((item) => item.tag));
-    return {
-      cards: highlights.length,
-      tags: tagSet.size,
-    };
-  }, [highlights]);
-
-  const fetchHighlights = async () => {
-    try {
-      setLoading(true);
-      const response = await fetch(`${API_BASE}/highlights`);
-      if (!response.ok) {
-        throw new Error("Could not fetch highlights.");
-      }
-      const data = await response.json();
-      setHighlights(Array.isArray(data) ? data : []);
-      setError("");
-    } catch (err) {
-      setError(err.message || "Unexpected error.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (user) {
-      fetchHighlights();
-    }
-  }, [user]);
 
   const submitAuth = async (event) => {
     event.preventDefault();
@@ -102,40 +67,7 @@ export default function App() {
 
   const logout = () => {
     setUser(null);
-    setHighlights([]);
     localStorage.removeItem(SESSION_KEY);
-  };
-
-  const submitForm = async (event, overrides = {}) => {
-    event.preventDefault();
-    try {
-      const baseTitle = overrides.title ?? form.title;
-      const baseDescription = overrides.description ?? form.description;
-      const baseTag = overrides.tag ?? form.tag;
-
-      const cleanedTitle = String(baseTitle || "").trim();
-      const payload = {
-        title: cleanedTitle,
-        description: String(baseDescription || cleanedTitle).trim(),
-        tag: String(baseTag || "General Project").trim(),
-      };
-
-      const response = await fetch(`${API_BASE}/highlights`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!response.ok) {
-        throw new Error("Could not add highlight.");
-      }
-
-      setForm({ title: "", description: "", tag: "" });
-      await fetchHighlights();
-      setError("");
-    } catch (err) {
-      setError(err.message || "Unexpected error.");
-    }
   };
 
   if (!user) {
@@ -155,18 +87,5 @@ export default function App() {
     );
   }
 
-  return (
-    <Dashboard
-      user={user}
-      stats={stats}
-      form={form}
-      setForm={setForm}
-      submitForm={submitForm}
-      error={error}
-      fetchHighlights={fetchHighlights}
-      loading={loading}
-      highlights={highlights}
-      logout={logout}
-    />
-  );
+  return <HomePage user={user} logout={logout} apiBase={API_BASE} />;
 }

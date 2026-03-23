@@ -333,6 +333,18 @@ Instructions:
 - For general questions (for example project overview), combine multiple chunks to infer project purpose.
 - Prioritize core logic such as functions, classes, and processing behavior.
 - Do not rely only on UI/frontend code unless the question is specifically about UI.
+- Keep the answer easy to scan with short sections and line breaks.
+- Preferred format:
+    Summary:
+    <1-2 lines>
+
+    Key points:
+    - <point>
+    - <point>
+
+    Files referenced:
+    - <file path>
+- Keep each bullet concise and avoid one large paragraph.
 
 Question:
 {query}

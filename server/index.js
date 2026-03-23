@@ -4,11 +4,12 @@ import dotenv from "dotenv";
 import mongoose from "mongoose";
 import highlightsRouter from "./routes/highlights.js";
 import authRouter from "./routes/auth.js";
+import projectsRouter from "./routes/projects.js";
 
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 5001;
 
 app.use(
   cors({
@@ -23,6 +24,7 @@ app.get("/api/health", (_req, res) => {
 
 app.use("/api/auth", authRouter);
 app.use("/api/highlights", highlightsRouter);
+app.use("/api/projects", projectsRouter);
 
 const startServer = async () => {
   if (process.env.MONGO_URI) {

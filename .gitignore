@@ -1,6 +1,8 @@
 node_modules/
 client/node_modules/
 server/node_modules/
+__pycache__/
+*.pyc
 .env
 server/.env
 client/.env
@@ -8,3 +10,4 @@ client/.env
 dist/
 client/dist/
 server/dist/
+server/uploads/

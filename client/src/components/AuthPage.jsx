@@ -14,22 +14,19 @@ export default function AuthPage({
   setAuthSuccess,
 }) {
   return (
-    <main className="page auth-page">
-      <section className="hero auth-hero">
-        <p className="eyebrow">MERN Aesthetic Studio</p>
-        <h1>{authMode === "signup" ? "Create your account" : "Welcome back"}</h1>
-        <p className="subtitle">
-          {authMode === "signup"
-            ? "Start curating high-impact project highlights in a polished workspace."
-            : "Sign in to manage your highlights and keep your demo portfolio updated."}
-        </p>
-      </section>
+    <main className="flex min-h-screen items-center justify-center bg-zinc-950 p-6 text-zinc-100">
+      <section className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
+        <div className="mb-5 text-center">
+          <p className="text-xs uppercase tracking-widest text-zinc-400">Chat with Codebase</p>
+          <h1 className="mt-2 text-2xl font-semibold">{authMode === "signup" ? "Create account" : "Welcome back"}</h1>
+        </div>
 
-      <section className="panel auth-panel">
-        <div className="auth-switch">
+        <div className="mb-4 flex rounded-xl border border-zinc-800 bg-zinc-950 p-1">
           <button
             type="button"
-            className={authMode === "login" ? "tab active" : "tab"}
+            className={`flex-1 rounded-lg px-3 py-2 text-sm ${
+              authMode === "login" ? "bg-zinc-800 text-zinc-100" : "text-zinc-400"
+            }`}
             onClick={() => {
               setAuthMode("login");
               setAuthError("");
@@ -40,7 +37,9 @@ export default function AuthPage({
           </button>
           <button
             type="button"
-            className={authMode === "signup" ? "tab active" : "tab"}
+            className={`flex-1 rounded-lg px-3 py-2 text-sm ${
+              authMode === "signup" ? "bg-zinc-800 text-zinc-100" : "text-zinc-400"
+            }`}
             onClick={() => {
               setAuthMode("signup");
               setAuthError("");
@@ -51,7 +50,7 @@ export default function AuthPage({
           </button>
         </div>
 
-        <form onSubmit={submitAuth} className="form-grid auth-form">
+        <form onSubmit={submitAuth} className="space-y-3">
           {authMode === "signup" ? (
             <SignupForm
               authForm={authForm}
@@ -67,8 +66,8 @@ export default function AuthPage({
           )}
         </form>
 
-        {authSuccess ? <p className="success">{authSuccess}</p> : null}
-        {authError ? <p className="error">{authError}</p> : null}
+        {authSuccess ? <p className="mt-4 text-sm text-emerald-300">{authSuccess}</p> : null}
+        {authError ? <p className="mt-4 text-sm text-red-300">{authError}</p> : null}
       </section>
     </main>
   );
