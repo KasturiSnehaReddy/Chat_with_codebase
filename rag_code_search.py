@@ -8,10 +8,12 @@ from sentence_transformers import SentenceTransformer, CrossEncoder
 from multi_file_chunker import extract_chunks_from_folder
 
 
-FINAL_CONTEXT_CHUNKS = 5
+FINAL_CONTEXT_CHUNKS = 4
 MAX_COVERAGE_ADDITIONS = 6
 COVERAGE_TYPES = ("function", "class", "global", "text", "summary")
 EMBEDDING_MODEL_NAME = "intfloat/e5-large-v2"
+MAX_CONTEXT_CHARS = 3500
+MAX_CHUNK_CHARS = 900
 
 
 def get_cache_paths(folder_path):
@@ -315,9 +317,21 @@ def ask_llm(query, retrieved_chunks):
         return "No relevant code chunks were found to answer this question."
 
     context_parts = []
+    context_size = 0
     for item in retrieved_chunks:
-        context_parts.append(f"File: {item['file']}\n{item['content']}")
+        file_name = item.get("file", "unknown")
+        content = (item.get("content") or "")[:MAX_CHUNK_CHARS]
+        block = f"File: {file_name}\n{content}"
+
+        if context_size + len(block) > MAX_CONTEXT_CHARS:
+            break
+
+        context_parts.append(block)
+        context_size += len(block)
+
     context = "\n\n".join(context_parts)
+    if not context:
+        return "No usable code context was available for LLM generation."
 
     prompt = f"""
 You are a senior software engineer analyzing a codebase.
@@ -357,6 +371,10 @@ Code:
         "model": "mistral",
         "prompt": prompt,
         "stream": False,
+        "options": {
+            "temperature": 0.2,
+            "num_predict": 350,
+        },
     }
 
     try:
@@ -369,7 +387,50 @@ Code:
         data = response.json()
         return data.get("response", "No response text returned by Ollama.").strip()
     except Exception as e:
-        return f"LLM request failed: {e}"
+        # Retry once with aggressively reduced context if Ollama rejects the first request.
+        try:
+            slim_parts = []
+            for item in retrieved_chunks[:2]:
+                file_name = item.get("file", "unknown")
+                content = (item.get("content") or "")[:450]
+                slim_parts.append(f"File: {file_name}\n{content}")
+
+            slim_context = "\n\n".join(slim_parts)
+            if not slim_context:
+                return f"LLM request failed: {e}"
+
+            slim_prompt = f"""
+You are a senior software engineer analyzing a codebase.
+Use ONLY the provided code context.
+If the context is insufficient, reply exactly:
+Insufficient context to answer from the provided code.
+
+Question:
+{query}
+
+Code:
+{slim_context}
+"""
+            retry_payload = {
+                "model": "mistral",
+                "prompt": slim_prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.2,
+                    "num_predict": 220,
+                },
+            }
+
+            retry = requests.post(
+                "http://localhost:11434/api/generate",
+                json=retry_payload,
+                timeout=120,
+            )
+            retry.raise_for_status()
+            retry_data = retry.json()
+            return retry_data.get("response", "No response text returned by Ollama.").strip()
+        except Exception:
+            return f"LLM request failed: {e}"
 
 
 def print_results(results):

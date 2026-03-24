@@ -2,11 +2,20 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import mongoose from "mongoose";
+import path from "path";
+import { fileURLToPath } from "url";
 import highlightsRouter from "./routes/highlights.js";
 import authRouter from "./routes/auth.js";
 import projectsRouter from "./routes/projects.js";
 
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Prefer server/.env. If missing, fallback to server/.env.example.
+dotenv.config({ path: path.join(__dirname, ".env") });
+if (!process.env.MONGO_URI) {
+  dotenv.config({ path: path.join(__dirname, ".env.example") });
+}
 
 const app = express();
 const port = process.env.PORT || 5001;

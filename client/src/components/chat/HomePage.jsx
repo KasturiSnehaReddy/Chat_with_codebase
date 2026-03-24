@@ -3,35 +3,16 @@ import Sidebar from "./Sidebar";
 import ChatWindow from "./ChatWindow";
 import UploadModal from "./UploadModal";
 
-const CHAT_STORAGE_KEY = "cwcb-chats";
-const MESSAGE_STORAGE_KEY = "cwcb-messages";
-
-function mockUpload(payload) {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve({
-        upload_id: `upl-${Date.now()}`,
-        file_count: payload.files.length,
-      });
-    }, 600);
-  });
-}
-
-function mockAsk({ chat_id, query, projectName, fileCount }) {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve({
-        chat_id,
-        answer: `I checked ${projectName} (${fileCount} files). Fresh answer for: "${query}". This response is stateless and does not depend on previous questions.`,
-      });
-    }, 900);
-  });
-}
+const CHAT_STORAGE_KEY_BASE = "cwcb-chats";
+const MESSAGE_STORAGE_KEY_BASE = "cwcb-messages";
 
 export default function HomePage({ user, logout, apiBase }) {
+  const chatStorageKey = `${CHAT_STORAGE_KEY_BASE}:${user._id}`;
+  const messageStorageKey = `${MESSAGE_STORAGE_KEY_BASE}:${user._id}`;
+
   const [chats, setChats] = useState(() => {
     try {
-      const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+      const raw = localStorage.getItem(chatStorageKey);
       return raw ? JSON.parse(raw) : [];
     } catch {
       return [];
@@ -39,7 +20,7 @@ export default function HomePage({ user, logout, apiBase }) {
   });
   const [messagesByChat, setMessagesByChat] = useState(() => {
     try {
-      const raw = localStorage.getItem(MESSAGE_STORAGE_KEY);
+      const raw = localStorage.getItem(messageStorageKey);
       return raw ? JSON.parse(raw) : {};
     } catch {
       return {};
@@ -59,7 +40,9 @@ export default function HomePage({ user, logout, apiBase }) {
     const interval = setInterval(async () => {
       for (const chat of pending) {
         try {
-          const res = await fetch(`${apiBase}/projects/${chat.backendId}/status`);
+          const res = await fetch(`${apiBase}/projects/${chat.backendId}/status`, {
+            headers: { "X-User-Id": user._id },
+          });
           if (!res.ok) continue;
           const statusPayload = await res.json();
           if (!statusPayload?.status) continue;
@@ -86,12 +69,12 @@ export default function HomePage({ user, logout, apiBase }) {
   }, [chats, apiBase]);
 
   useEffect(() => {
-    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(chats));
-  }, [chats]);
+    localStorage.setItem(chatStorageKey, JSON.stringify(chats));
+  }, [chats, chatStorageKey]);
 
   useEffect(() => {
-    localStorage.setItem(MESSAGE_STORAGE_KEY, JSON.stringify(messagesByChat));
-  }, [messagesByChat]);
+    localStorage.setItem(messageStorageKey, JSON.stringify(messagesByChat));
+  }, [messagesByChat, messageStorageKey]);
 
   useEffect(() => {
     if (!chats.length) {
@@ -138,9 +121,6 @@ export default function HomePage({ user, logout, apiBase }) {
     setIsModalOpen(false);
 
     try {
-      // Keep tiny visual delay so upload state is visible in UI.
-      await mockUpload({ projectName, files });
-
       // Real API: upload selected folder files and create project with server-side storage path.
       const formData = new FormData();
       formData.append("projectName", projectName);
@@ -151,6 +131,7 @@ export default function HomePage({ user, logout, apiBase }) {
 
       const projectRes = await fetch(`${apiBase}/projects/upload`, {
         method: "POST",
+        headers: { "X-User-Id": user._id },
         body: formData,
       });
 
@@ -209,28 +190,24 @@ export default function HomePage({ user, logout, apiBase }) {
 
     try {
       // Fresh API call for every query (stateless Q&A) against real RAG backend.
-      let response;
-      if (currentChat.backendId) {
-        const res = await fetch(`${apiBase}/projects/${currentChat.backendId}/ask`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: queryText.trim() }),
-        });
-
-        if (!res.ok) {
-          const payload = await res.json().catch(() => ({}));
-          throw new Error(payload.message || "Backend RAG request failed");
-        }
-        response = await res.json();
-      } else {
-        // Legacy local chats without backend project id fallback to mock response.
-        response = await mockAsk({
-          chat_id: currentChat.id,
-          query: queryText.trim(),
-          projectName: currentChat.name,
-          fileCount: currentChat.fileCount,
-        });
+      if (!currentChat.backendId) {
+        throw new Error("This chat is not linked to backend. Create a new chat.");
       }
+
+      const res = await fetch(`${apiBase}/projects/${currentChat.backendId}/ask`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-User-Id": user._id,
+        },
+        body: JSON.stringify({ query: queryText.trim() }),
+      });
+
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload.message || "Backend RAG request failed");
+      }
+      const response = await res.json();
 
       const assistantMessage = {
         id: `m-${Date.now()}-ai`,

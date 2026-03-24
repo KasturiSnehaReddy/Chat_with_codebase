@@ -3,9 +3,19 @@ import crypto from "crypto";
 import { User } from "../models/User.js";
 
 const router = express.Router();
-const useMemoryStore = !process.env.MONGO_URI;
+const isMemoryStore = () => !process.env.MONGO_URI;
 
 const memoryUsers = [];
+
+// Auth middleware: extract userId from X-User-Id header and attach to req.user
+export const authMiddleware = (req, res, next) => {
+  const userId = req.headers["x-user-id"];
+  if (!userId) {
+    return res.status(401).json({ message: "Authentication required. Send X-User-Id header." });
+  }
+  req.user = { _id: userId };
+  next();
+};
 
 const hashPassword = (password) =>
   crypto.createHash("sha256").update(password).digest("hex");
@@ -25,7 +35,7 @@ router.post("/signup", async (req, res) => {
     const normalizedEmail = String(email).toLowerCase().trim();
     const passwordHash = hashPassword(password);
 
-    if (useMemoryStore) {
+    if (isMemoryStore()) {
       const exists = memoryUsers.some((item) => item.email === normalizedEmail);
       if (exists) {
         return res.status(409).json({ message: "User already exists." });
@@ -74,7 +84,7 @@ router.post("/login", async (req, res) => {
     const normalizedEmail = String(email).toLowerCase().trim();
     const passwordHash = hashPassword(password);
 
-    if (useMemoryStore) {
+    if (isMemoryStore()) {
       const found = memoryUsers.find((item) => item.email === normalizedEmail);
       if (!found || found.passwordHash !== passwordHash) {
         return res.status(401).json({ message: "Invalid credentials." });

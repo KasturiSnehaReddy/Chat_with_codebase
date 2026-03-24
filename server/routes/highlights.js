@@ -21,11 +21,11 @@ const memoryHighlights = [
   },
 ];
 
-const useMemoryStore = !process.env.MONGO_URI;
+const isMemoryStore = () => !process.env.MONGO_URI;
 
 router.get("/", async (_req, res) => {
   try {
-    if (useMemoryStore) {
+    if (isMemoryStore()) {
       return res.json(memoryHighlights);
     }
 
@@ -44,7 +44,7 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ message: "title, description, and tag are required." });
     }
 
-    if (useMemoryStore) {
+    if (isMemoryStore()) {
       const item = {
         _id: `mem-${Date.now()}`,
         title,

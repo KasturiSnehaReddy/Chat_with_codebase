@@ -1,24 +1,26 @@
 import express from "express";
-import { Project } from "../models/Project.js";
-import { Message } from "../models/Message.js";
-import { execFile } from "child_process";
 import path from "path";
-import { fileURLToPath } from "url";
 import fs from "fs/promises";
 import multer from "multer";
+import { fileURLToPath } from "url";
+import { Project } from "../models/Project.js";
+import { Message } from "../models/Message.js";
+import { authMiddleware } from "./auth.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const router = express.Router();
+const isMemoryStore = () => !process.env.MONGO_URI;
+const RAG_SERVICE_URL = process.env.RAG_SERVICE_URL || "http://127.0.0.1:8001";
 
-const useMemoryStore = !process.env.MONGO_URI;
-
-// In-memory stores for fallback
+// In-memory fallback stores
 const memoryProjects = [];
-const memoryMessages = {}; // projectId -> [messages]
+const memoryMessages = {};
+
 const upload = multer({ storage: multer.memoryStorage() });
 const uploadsRoot = path.resolve(__dirname, "..", "uploads");
+const RAG_TOP_K = 4;
 
 function safeRelativePath(p) {
   const normalized = String(p || "").replace(/\\/g, "/").replace(/^\/+/, "");
@@ -26,93 +28,69 @@ function safeRelativePath(p) {
   return normalized;
 }
 
-function parseJsonFromStdout(stdout) {
-  const text = String(stdout || "").trim();
-  if (!text) return null;
-
-  // Some Python libraries print logs before JSON. Parse the last non-empty line.
-  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (!lines.length) return null;
-
-  return JSON.parse(lines[lines.length - 1]);
-}
-
-function runRagCli(cliPath, folder, query) {
-  const runners = [
-    { cmd: "python", args: [cliPath, folder, query] },
-    { cmd: "py", args: ["-3", cliPath, folder, query] },
-  ];
-
-  return new Promise((resolve, reject) => {
-    const tryRunner = (idx) => {
-      if (idx >= runners.length) {
-        reject(new Error("No Python runner worked. Ensure python/py is installed and on PATH."));
-        return;
-      }
-
-      const { cmd, args } = runners[idx];
-      execFile(cmd, args, { timeout: 2 * 60 * 1000, windowsHide: true }, (err, stdout, stderr) => {
-        if (err) {
-          tryRunner(idx + 1);
-          return;
-        }
-        resolve({ stdout, stderr });
-      });
-    };
-
-    tryRunner(0);
+async function callRagServiceUpload(chatId, folderPath) {
+  const response = await fetch(`${RAG_SERVICE_URL}/upload`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, folder_path: folderPath }),
   });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.detail || payload.message || "RAG upload failed");
+  }
+  return payload;
 }
 
-function runPythonScript(scriptPath, args) {
-  const runners = [
-    { cmd: "python", args: [scriptPath, ...args] },
-    { cmd: "py", args: ["-3", scriptPath, ...args] },
-  ];
-
-  return new Promise((resolve, reject) => {
-    const tryRunner = (idx) => {
-      if (idx >= runners.length) {
-        reject(new Error("No Python runner worked. Ensure python/py is installed and on PATH."));
-        return;
-      }
-
-      const { cmd, args: fullArgs } = runners[idx];
-      execFile(cmd, fullArgs, { timeout: 10 * 60 * 1000, windowsHide: true }, (err, stdout, stderr) => {
-        if (err) {
-          tryRunner(idx + 1);
-          return;
-        }
-        resolve({ stdout, stderr });
-      });
-    };
-
-    tryRunner(0);
+async function callRagServiceAsk(chatId, query, topK = RAG_TOP_K) {
+  const response = await fetch(`${RAG_SERVICE_URL}/ask`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, query, top_k: topK }),
   });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.detail || payload.message || "RAG ask failed");
+  }
+  return payload;
 }
 
-// Create project
-router.post("/", async (req, res) => {
+router.post("/", authMiddleware, async (req, res) => {
   try {
     const { name, description, fingerprint, indexPath } = req.body;
     if (!name) return res.status(400).json({ message: "name is required" });
 
-    if (useMemoryStore) {
-      const proj = { _id: `mem-${Date.now()}`, name, description, fingerprint, indexPath, createdAt: new Date().toISOString() };
+    if (isMemoryStore()) {
+      const proj = {
+        _id: `mem-${Date.now()}`,
+        name,
+        description,
+        fingerprint,
+        indexPath,
+        ownerId: req.user._id,
+        createdAt: new Date().toISOString(),
+      };
       memoryProjects.unshift(proj);
       memoryMessages[proj._id] = [];
       return res.status(201).json(proj);
     }
 
-    const proj = await Project.create({ name, description, fingerprint, indexPath });
+    const proj = await Project.create({
+      name,
+      description,
+      fingerprint,
+      indexPath,
+      ownerId: req.user._id,
+    });
     return res.status(201).json(proj);
   } catch (error) {
     return res.status(500).json({ message: "Failed to create project", error: error.message });
   }
 });
 
-// Upload project files from browser folder input and create a project
-router.post("/upload", upload.array("files"), async (req, res) => {
+// Upload folder files and trigger one-time indexing for this chat
+router.post("/upload", authMiddleware, upload.array("files"), async (req, res) => {
   try {
     const projectName = String(req.body.projectName || "").trim();
     const files = req.files || [];
@@ -147,39 +125,37 @@ router.post("/upload", upload.array("files"), async (req, res) => {
       await fs.writeFile(targetPath, file.buffer);
     }
 
-    // Prepare chunks/index immediately so future asks are fast (cache already built).
-    const prepareScript = path.resolve(__dirname, "..", "..", "rag_prepare.py");
-    let prepareResult = { cacheHit: false, chunkCount: 0 };
-    try {
-      const { stdout } = await runPythonScript(prepareScript, [projectDir]);
-      const parsed = parseJsonFromStdout(stdout) || {};
-      if (parsed.error) {
-        throw new Error(parsed.error);
-      }
-      prepareResult = {
-        cacheHit: !!parsed.cacheHit,
-        chunkCount: Number(parsed.chunkCount || 0),
-      };
-    } catch (error) {
-      return res.status(500).json({
-        message: "Upload succeeded but RAG preparation failed",
-        error: error.message,
-      });
-    }
-
-    if (useMemoryStore) {
+    if (isMemoryStore()) {
       const proj = {
         _id: `mem-${Date.now()}`,
         name: projectName,
         description: "Uploaded from UI",
         indexPath: projectDir,
-        status: "ready",
-        chunkCount: prepareResult.chunkCount,
-        cacheHitOnPrepare: prepareResult.cacheHit,
+        status: "processing",
+        chunkCount: 0,
+        cacheHitOnPrepare: false,
+        ownerId: req.user._id,
         createdAt: new Date().toISOString(),
       };
       memoryProjects.unshift(proj);
       memoryMessages[proj._id] = [];
+
+      // One-time preprocessing for this chat/project.
+      try {
+        const rag = await callRagServiceUpload(proj._id, projectDir);
+        proj.status = "ready";
+        proj.chunkCount = Number(rag.chunk_count || 0);
+        proj.cacheHitOnPrepare = !!rag.cache_hit;
+      } catch (error) {
+        proj.status = "failed";
+        return res.status(500).json({
+          ...proj,
+          fileCount: files.length,
+          message: "Upload succeeded but RAG preparation failed",
+          error: error.message,
+        });
+      }
+
       return res.status(201).json({ ...proj, fileCount: files.length });
     }
 
@@ -187,10 +163,26 @@ router.post("/upload", upload.array("files"), async (req, res) => {
       name: projectName,
       description: "Uploaded from UI",
       indexPath: projectDir,
-      status: "ready",
-      chunkCount: prepareResult.chunkCount,
-      cacheHitOnPrepare: prepareResult.cacheHit,
+      status: "processing",
+      ownerId: req.user._id,
     });
+
+    try {
+      const rag = await callRagServiceUpload(String(proj._id), projectDir);
+      proj.status = "ready";
+      proj.chunkCount = Number(rag.chunk_count || 0);
+      proj.cacheHitOnPrepare = !!rag.cache_hit;
+      await proj.save();
+    } catch (error) {
+      proj.status = "failed";
+      await proj.save();
+      return res.status(500).json({
+        ...proj.toObject(),
+        fileCount: files.length,
+        message: "Upload succeeded but RAG preparation failed",
+        error: error.message,
+      });
+    }
 
     return res.status(201).json({ ...proj.toObject(), fileCount: files.length });
   } catch (error) {
@@ -198,27 +190,29 @@ router.post("/upload", upload.array("files"), async (req, res) => {
   }
 });
 
-// List projects
-router.get("/", async (_req, res) => {
+router.get("/", authMiddleware, async (_req, res) => {
   try {
-    if (useMemoryStore) return res.json(memoryProjects);
-    const projects = await Project.find().sort({ createdAt: -1 }).lean();
+    if (isMemoryStore()) {
+      const userProjects = memoryProjects.filter((p) => p.ownerId === _req.user._id);
+      return res.json(userProjects);
+    }
+    const projects = await Project.find({ ownerId: _req.user._id }).sort({ createdAt: -1 }).lean();
     return res.json(projects);
   } catch (error) {
     return res.status(500).json({ message: "Failed to list projects", error: error.message });
   }
 });
 
-// Get project
-router.get("/:id", async (req, res) => {
+router.get("/:id", authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    if (useMemoryStore) {
-      const proj = memoryProjects.find((p) => p._id === id);
+    if (isMemoryStore()) {
+      const proj = memoryProjects.find((p) => p._id === id && p.ownerId === req.user._id);
       if (!proj) return res.status(404).json({ message: "project not found" });
       return res.json(proj);
     }
-    const proj = await Project.findById(id).lean();
+
+    const proj = await Project.findOne({ _id: id, ownerId: req.user._id }).lean();
     if (!proj) return res.status(404).json({ message: "project not found" });
     return res.json(proj);
   } catch (error) {
@@ -226,12 +220,11 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// Get project status
-router.get("/:id/status", async (req, res) => {
+router.get("/:id/status", authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    if (useMemoryStore) {
-      const proj = memoryProjects.find((p) => p._id === id);
+    if (isMemoryStore()) {
+      const proj = memoryProjects.find((p) => p._id === id && p.ownerId === req.user._id);
       if (!proj) return res.status(404).json({ message: "project not found" });
       return res.json({
         status: proj.status || "ready",
@@ -240,7 +233,7 @@ router.get("/:id/status", async (req, res) => {
       });
     }
 
-    const proj = await Project.findById(id).lean();
+    const proj = await Project.findOne({ _id: id, ownerId: req.user._id }).lean();
     if (!proj) return res.status(404).json({ message: "project not found" });
     return res.json({
       status: proj.status || "ready",
@@ -252,66 +245,62 @@ router.get("/:id/status", async (req, res) => {
   }
 });
 
-// Create message under project
-router.post("/:id/messages", async (req, res) => {
+router.post("/:id/messages", authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { role, text, sources, modelMeta, fallback } = req.body;
     if (!role || !text) return res.status(400).json({ message: "role and text are required" });
 
-    if (useMemoryStore) {
-      if (!memoryMessages[id]) return res.status(404).json({ message: "project not found" });
-      const msg = { _id: `memmsg-${Date.now()}`, projectId: id, role, text, sources: sources || [], modelMeta: modelMeta || {}, fallback: !!fallback, createdAt: new Date().toISOString() };
+    if (isMemoryStore()) {
+      const proj = memoryProjects.find((p) => p._id === id && p.ownerId === req.user._id);
+      if (!proj) return res.status(404).json({ message: "project not found" });
+      if (!memoryMessages[id]) memoryMessages[id] = [];
+
+      const msg = {
+        _id: `memmsg-${Date.now()}`,
+        projectId: id,
+        role,
+        text,
+        sources: sources || [],
+        modelMeta: modelMeta || {},
+        fallback: !!fallback,
+        createdAt: new Date().toISOString(),
+      };
       memoryMessages[id].push(msg);
       return res.status(201).json(msg);
     }
 
-    const message = await Message.create({ projectId: id, role, text, sources: sources || [], modelMeta: modelMeta || {}, fallback: !!fallback });
+    const proj = await Project.findOne({ _id: id, ownerId: req.user._id }).lean();
+    if (!proj) return res.status(404).json({ message: "project not found" });
+
+    const message = await Message.create({
+      projectId: id,
+      role,
+      text,
+      sources: sources || [],
+      modelMeta: modelMeta || {},
+      fallback: !!fallback,
+    });
     return res.status(201).json(message);
   } catch (error) {
     return res.status(500).json({ message: "Failed to create message", error: error.message });
   }
 });
 
-// Ask a query against a project's folder/index and persist assistant reply
-router.post("/:id/ask", async (req, res) => {
+// Fast query-time path: query embedding + retrieval + rerank + LLM only
+router.post("/:id/ask", authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { query, folderPath } = req.body;
+    const { query } = req.body;
     if (!query) return res.status(400).json({ message: "query is required" });
 
-    // resolve folder to use: project's indexPath or provided folderPath
-    let folder = folderPath;
-    if (!folder) {
-      if (useMemoryStore) {
-        const proj = memoryProjects.find((p) => p._id === id);
-        if (!proj) return res.status(404).json({ message: "project not found" });
-        folder = proj.indexPath;
-      } else {
-        const proj = await Project.findById(id).lean();
-        if (!proj) return res.status(404).json({ message: "project not found" });
-        folder = proj.indexPath;
-      }
-    }
-
-    if (!folder) return res.status(400).json({ message: "No folderPath available for project" });
-
-    if (useMemoryStore) {
-      const memProj = memoryProjects.find((p) => p._id === id);
-      if (memProj?.status && memProj.status !== "ready") {
-        return res.status(409).json({ message: "Project is still processing. Please wait." });
-      }
-    } else {
-      const proj = await Project.findById(id).lean();
+    if (isMemoryStore()) {
+      const proj = memoryProjects.find((p) => p._id === id && p.ownerId === req.user._id);
       if (!proj) return res.status(404).json({ message: "project not found" });
-      if (proj.status && proj.status !== "ready") {
+      if (proj.status !== "ready") {
         return res.status(409).json({ message: "Project is still processing. Please wait." });
       }
-    }
-
-    // Persist user question first
-    if (useMemoryStore) {
-      if (!memoryMessages[id]) return res.status(404).json({ message: "project not found" });
+      if (!memoryMessages[id]) memoryMessages[id] = [];
       memoryMessages[id].push({
         _id: `memmsg-${Date.now()}-u`,
         projectId: id,
@@ -319,72 +308,68 @@ router.post("/:id/ask", async (req, res) => {
         text: query,
         createdAt: new Date().toISOString(),
       });
-    } else {
-      await Message.create({ projectId: id, role: "user", text: query });
-    }
 
-    // Call the Python RAG CLI from repo root
-    const cli = path.resolve(__dirname, "..", "..", "rag_query.py");
-    const { stdout, stderr } = await runRagCli(cli, folder, query);
-
-    let parsed;
-    try {
-      parsed = parseJsonFromStdout(stdout);
-    } catch {
-      return res.status(500).json({ message: "Invalid JSON from RAG process", raw: stdout, stderr });
-    }
-
-    if (!parsed) {
-      return res.status(500).json({ message: "Empty response from RAG process", stderr });
-    }
-
-    if (parsed.error) {
-      return res.status(500).json({ message: parsed.error, stderr });
-    }
-
-    // Save assistant message
-    const assistantText = parsed.answer || "";
-    if (useMemoryStore) {
+      const rag = await callRagServiceAsk(id, query, RAG_TOP_K);
       const msg = {
         _id: `memmsg-${Date.now()}-a`,
         projectId: id,
         role: "assistant",
-        text: assistantText,
-        sources: parsed.sources || [],
+        text: rag.answer || "",
+        sources: rag.sources || [],
         createdAt: new Date().toISOString(),
       };
       memoryMessages[id].push(msg);
-      return res.json({ answer: assistantText, sources: parsed.sources || [], saved: msg });
+      return res.json({ answer: msg.text, sources: msg.sources, saved: msg });
     }
 
+    const proj = await Project.findOne({ _id: id, ownerId: req.user._id }).lean();
+    if (!proj) return res.status(404).json({ message: "project not found" });
+    if (proj.status !== "ready") {
+      return res.status(409).json({ message: "Project is still processing. Please wait." });
+    }
+
+    await Message.create({ projectId: id, role: "user", text: query });
+
+    const rag = await callRagServiceAsk(id, query, RAG_TOP_K);
     const saved = await Message.create({
       projectId: id,
       role: "assistant",
-      text: assistantText,
-      sources: parsed.sources || [],
+      text: rag.answer || "",
+      sources: rag.sources || [],
     });
-    return res.json({ answer: assistantText, sources: parsed.sources || [], saved });
+
+    return res.json({ answer: saved.text, sources: saved.sources, saved });
   } catch (error) {
     return res.status(500).json({ message: "Failed to run query", error: error.message });
   }
 });
 
-// List messages for a project (paginated)
-router.get("/:id/messages", async (req, res) => {
+router.get("/:id/messages", authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const page = Math.max(1, parseInt(req.query.page || "1", 10));
     const limit = Math.min(100, parseInt(req.query.limit || "50", 10));
     const skip = (page - 1) * limit;
 
-    if (useMemoryStore) {
+    if (isMemoryStore()) {
+      const proj = memoryProjects.find((p) => p._id === id && p.ownerId === req.user._id);
+      if (!proj) return res.status(404).json({ message: "project not found" });
+
       const msgs = memoryMessages[id] || [];
-      const pageItems = msgs.slice(-1 * (page * limit)).slice(0, limit); // simple last-N semantics
+      const pageItems = msgs.slice(-1 * (page * limit)).slice(0, limit);
       return res.json({ items: pageItems, page, limit, total: msgs.length });
     }
 
+    const proj = await Project.findOne({ _id: id, ownerId: req.user._id }).lean();
+    if (!proj) return res.status(404).json({ message: "project not found" });
+
     const total = await Message.countDocuments({ projectId: id });
-    const items = await Message.find({ projectId: id }).sort({ createdAt: 1 }).skip(skip).limit(limit).lean();
+    const items = await Message.find({ projectId: id })
+      .sort({ createdAt: 1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
     return res.json({ items, page, limit, total });
   } catch (error) {
     return res.status(500).json({ message: "Failed to list messages", error: error.message });

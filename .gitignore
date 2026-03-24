@@ -11,3 +11,4 @@ dist/
 client/dist/
 server/dist/
 server/uploads/
+.rag_service_registry.json
