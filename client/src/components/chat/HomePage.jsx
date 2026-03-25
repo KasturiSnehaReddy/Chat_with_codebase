@@ -249,7 +249,10 @@ export default function HomePage({ user, logout, apiBase }) {
   };
 
   return (
-    <div className="h-screen w-full bg-zinc-950 text-zinc-100">
+    <div className="relative h-screen w-full bg-zinc-950 text-zinc-100">
+      <div className="pointer-events-none absolute right-5 top-4 z-20 rounded-full border border-emerald-400/30 bg-zinc-900/80 px-3 py-1 backdrop-blur-sm">
+        <span className="text-[11px] font-semibold tracking-[0.14em] text-emerald-300">CodeRAG</span>
+      </div>
       <div className="mx-auto flex h-full max-w-[1600px]">
         <Sidebar
           chats={chats}

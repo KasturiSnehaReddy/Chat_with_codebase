@@ -16,9 +16,10 @@ export default function AuthPage({
   return (
     <main className="flex min-h-screen items-center justify-center bg-zinc-950 p-6 text-zinc-100">
       <section className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
-        <div className="mb-5 text-center">
-          <p className="text-xs uppercase tracking-widest text-zinc-400">Chat with Codebase</p>
-          <h1 className="mt-2 text-2xl font-semibold">{authMode === "signup" ? "Create account" : "Welcome back"}</h1>
+        <div className="mb-6 text-center">
+          <p className="text-[11px] font-semibold tracking-[0.18em] text-emerald-300/90">CodeRAG</p>
+          <p className="mt-1 text-xs tracking-wide text-zinc-400">Retrieval-Augmented Codebase Understanding System</p>
+          <h1 className="mt-4 text-3xl font-semibold leading-tight">{authMode === "signup" ? "Create account" : "Welcome back"}</h1>
         </div>
 
         <div className="mb-4 flex rounded-xl border border-zinc-800 bg-zinc-950 p-1">
