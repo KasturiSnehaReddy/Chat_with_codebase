@@ -14,6 +14,12 @@ COVERAGE_TYPES = ("function", "class", "global", "text", "summary")
 EMBEDDING_MODEL_NAME = "intfloat/e5-large-v2"
 MAX_CONTEXT_CHARS = 3500
 MAX_CHUNK_CHARS = 900
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
+OPENROUTER_API_URL = os.getenv("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434/api/generate")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral")
 
 
 def get_cache_paths(folder_path):
@@ -368,7 +374,7 @@ Code:
 """
 
     payload = {
-        "model": "mistral",
+        "model": OLLAMA_MODEL,
         "prompt": prompt,
         "stream": False,
         "options": {
@@ -377,15 +383,45 @@ Code:
         },
     }
 
-    try:
+    def call_openrouter(user_prompt, max_tokens):
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "model": OPENROUTER_MODEL,
+            "messages": [{"role": "user", "content": user_prompt}],
+            "temperature": 0.2,
+            "max_tokens": max_tokens,
+        }
         response = requests.post(
-            "http://localhost:11434/api/generate",
-            json=payload,
+            OPENROUTER_API_URL,
+            headers=headers,
+            json=body,
+            timeout=120,
+        )
+        response.raise_for_status()
+        data = response.json()
+        choices = data.get("choices") or []
+        if not choices:
+            return "No response text returned by OpenRouter."
+        message = choices[0].get("message") or {}
+        return (message.get("content") or "No response text returned by OpenRouter.").strip()
+
+    def call_ollama(request_payload):
+        response = requests.post(
+            OLLAMA_API_URL,
+            json=request_payload,
             timeout=120,
         )
         response.raise_for_status()
         data = response.json()
         return data.get("response", "No response text returned by Ollama.").strip()
+
+    try:
+        if LLM_PROVIDER == "openrouter" and OPENROUTER_API_KEY:
+            return call_openrouter(prompt, max_tokens=350)
+        return call_ollama(payload)
     except Exception as e:
         # Retry once with aggressively reduced context if Ollama rejects the first request.
         try:
@@ -412,7 +448,7 @@ Code:
 {slim_context}
 """
             retry_payload = {
-                "model": "mistral",
+                "model": OLLAMA_MODEL,
                 "prompt": slim_prompt,
                 "stream": False,
                 "options": {
@@ -421,14 +457,9 @@ Code:
                 },
             }
 
-            retry = requests.post(
-                "http://localhost:11434/api/generate",
-                json=retry_payload,
-                timeout=120,
-            )
-            retry.raise_for_status()
-            retry_data = retry.json()
-            return retry_data.get("response", "No response text returned by Ollama.").strip()
+            if LLM_PROVIDER == "openrouter" and OPENROUTER_API_KEY:
+                return call_openrouter(slim_prompt, max_tokens=220)
+            return call_ollama(retry_payload)
         except Exception:
             return f"LLM request failed: {e}"
 
