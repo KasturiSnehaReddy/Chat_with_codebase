@@ -98,16 +98,22 @@ def _load_chat_state(chat_id: str) -> Dict[str, Any]:
 
 @app.on_event("startup")
 def startup_event() -> None:
-    _ensure_models_loaded()
+    # Load heavy models in a background thread so the server binds the port fast
+    try:
+        threading.Thread(target=_ensure_models_loaded, daemon=True).start()
+    except Exception:
+        # fallback to synchronous load if threading fails
+        _ensure_models_loaded()
+
     global _chat_registry
     _chat_registry = _load_registry()
 
 
 @app.get("/health")
 def health() -> Dict[str, Any]:
-    _ensure_models_loaded()
+    status = "loading" if (_embedding_model is None or _reranker is None) else "ok"
     return {
-        "status": "ok",
+        "status": status,
         "embedding_model": EMBEDDING_MODEL_NAME,
         "reranker": "cross-encoder/ms-marco-MiniLM-L-6-v2",
         "indexed_chats_in_memory": len(_chat_store),
