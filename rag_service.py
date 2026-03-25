@@ -7,6 +7,7 @@ from typing import Dict, Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer, CrossEncoder
+from dotenv import load_dotenv
 
 from multi_file_chunker import extract_chunks_from_folder
 from rag_code_search import (
@@ -21,6 +22,19 @@ from rag_code_search import (
 )
 
 app = FastAPI(title="RAG Service", version="1.0.0")
+
+# Load environment variables from server/.env then repo .env if present.
+# System environment variables take precedence; load_dotenv won't override them.
+try:
+    repo_dir = os.path.dirname(__file__)
+    server_env = os.path.join(repo_dir, "server", ".env")
+    root_env = os.path.join(repo_dir, ".env")
+    if os.path.isfile(server_env):
+        load_dotenv(dotenv_path=server_env, override=False)
+    if os.path.isfile(root_env):
+        load_dotenv(dotenv_path=root_env, override=False)
+except Exception:
+    pass
 
 REGISTRY_PATH = os.path.join(os.path.dirname(__file__), ".rag_service_registry.json")
 

@@ -6,3 +6,4 @@ requests>=2.32.3
 numpy>=1.26.4
 gunicorn==25.2.0
 tree_sitter_languages>=0.20.0
+python-dotenv>=1.0.0
