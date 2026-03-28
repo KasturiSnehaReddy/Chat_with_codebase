@@ -317,7 +317,7 @@ def add_type_balanced_coverage(
 
 def ask_llm(query, retrieved_chunks):
     """
-    Send retrieved code chunks + user question to local Ollama (mistral).
+    Send retrieved code chunks + user question to the configured LLM provider.
     """
     if not retrieved_chunks:
         return "No relevant code chunks were found to answer this question."
@@ -419,11 +419,17 @@ Code:
         return data.get("response", "No response text returned by Ollama.").strip()
 
     try:
-        if LLM_PROVIDER == "openrouter" and OPENROUTER_API_KEY:
+        if LLM_PROVIDER == "openrouter":
+            if not OPENROUTER_API_KEY:
+                return "LLM request failed: OPENROUTER_API_KEY is missing."
             return call_openrouter(prompt, max_tokens=350)
-        return call_ollama(payload)
+
+        if LLM_PROVIDER == "ollama":
+            return call_ollama(payload)
+
+        return "LLM request failed: unsupported LLM_PROVIDER. Use 'openrouter' or 'ollama'."
     except Exception as e:
-        # Retry once with aggressively reduced context if Ollama rejects the first request.
+        # Retry once with aggressively reduced context using the same provider.
         try:
             slim_parts = []
             for item in retrieved_chunks[:2]:
@@ -457,9 +463,15 @@ Code:
                 },
             }
 
-            if LLM_PROVIDER == "openrouter" and OPENROUTER_API_KEY:
+            if LLM_PROVIDER == "openrouter":
+                if not OPENROUTER_API_KEY:
+                    return "LLM request failed: OPENROUTER_API_KEY is missing."
                 return call_openrouter(slim_prompt, max_tokens=220)
-            return call_ollama(retry_payload)
+
+            if LLM_PROVIDER == "ollama":
+                return call_ollama(retry_payload)
+
+            return "LLM request failed: unsupported LLM_PROVIDER. Use 'openrouter' or 'ollama'."
         except Exception:
             return f"LLM request failed: {e}"
 
